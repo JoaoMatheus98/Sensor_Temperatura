@@ -1,0 +1,301 @@
+dat		equ 	P2; 				Pinos de controle do lcd
+en		equ 	P2.3;				datasheet:	rs setado em 1
+rs		equ 	P2.2;				e rw setado em 0 (aterrado)
+
+oneWire	equ		P1.0;				pino de controle do termometro 
+
+dataBuf	equ		030h;				Endereço inicial do buffer de dados do sensor
+tempBuf	equ		032h;				seta o endereço inicial do buffer de temperatura
+
+dispL1	equ		034h;				Endereço inicial do buffer do display
+
+		org		0000h
+		sjmp	inicio
+
+texto:	db		"Temperatura: ", 0
+
+inicio:	mov		dat,#0
+		clr		en
+		clr		rs
+
+		mov		r0,#tempBuf;		Seta a inicialização do buffer de temperatura
+		mov 	@r0,#01010000b;		A temperatura é representada como dados brutos do sensor
+		inc 	r0
+		mov 	@r0,#00000001b
+
+		orl		TMOD,#00010001b;	Inicialização do Timer
+		anl 	TMOD,#11111101b;	Timer0 é usado para o delay
+		mov		P0,#0
+
+		acall	iniLCD;				Inicialização do display
+
+loop:	acall	lerSensor
+		mov		r0,#dataBuf;		copia dados do sensor para o buffer
+		mov 	a,r1
+		mov 	@r0,a
+		mov 	a,r2
+		inc		r0
+		mov 	@r0,a
+
+		mov 	a,#01h
+		clr 	rs
+		acall	sendByte
+
+		mov		r0,#dispL1;			Copia a constante do texto para a linha 1
+		mov		dptr,#texto
+		setb	rs
+		acall	copiaBuf					
+
+		acall	convertTemp;		Converte dados do sensor para ASCII			
+		acall	ascii						
+		acall	carregaBuf					
+				
+		mov		@r0,0
+
+		mov		r0,#dispL1;			Linha 1 do display
+		acall	sendChars;			Exibe a temperatura atual					
+
+		mov		r0,#tempBuf;		Carrega a temperatura definida nos registros para conversão
+		mov 	a,@r0
+		mov 	r1,a
+		inc 	r0
+		mov 	a,@r0
+		mov 	r2,a
+
+		acall	copiaBuf
+
+		acall	convertTemp;		Converte a temperatura definida em ASCII
+		acall	ascii
+		acall	carregaBuf
+
+		mov		r0,#0
+
+		acall	sendChars
+
+delay:	acall	delay1ms
+		djnz	r3,delay
+		sjmp	loop
+
+delay1ms:
+		mov		TL0,#017h;			carrega valores iniciais do timer
+		mov		TH0,#0FCh;
+		setb	TR0;				seta temporizador
+
+wait:	jnb		TF0,wait;			aguarda o estouro
+		clr		TR0;				desativa temporizador
+		clr		TF0;				limpar sinalizador de estouro
+		ret
+
+simpDelay:
+		djnz	r7,simpDelay
+		ret
+
+iniOneWire:	
+		setb	oneWire
+		mov		r7,#48
+		acall	simpDelay
+
+		clr		oneWire
+		
+		mov		r7,#180
+		acall	simpDelay
+		mov		r7,#180
+		acall	simpDelay
+
+		setb	oneWire
+
+		mov		r7,#84
+		acall	simpDelay
+
+		jnb		oneWire,iniErro
+
+iniErro:
+		orl		06h,#1
+		jmp		iniFim
+		anl		06h,#0FEh
+
+iniFim:	mov		r7,#20
+		acall	simpDelay
+		ret
+
+lerByteOneWire:			;				Resultado no acumulador
+		mov		r6,#8
+		clr		a
+iniLeitura:
+		clr		oneWire
+		clr		C
+		rrc		a
+		setb	oneWire
+		jnb		oneWire,fimLeitura
+		orl		a,#080h
+fimLeitura:
+		mov		r7,#30
+		acall	simpDelay
+		djnz	r6,iniLeitura
+		ret
+
+escreverOneWire:		;				escreve byte do acumulador
+		mov		r6,#8
+iniEscrita:
+		clr		oneWire
+		rrc		a
+		mov		oneWire,C
+		mov		r7,#45
+		acall	simpDelay
+		setb	oneWire
+		djnz	r6,iniEscrita
+		mov		r7,#30
+		acall	simpDelay
+		ret
+
+lerSensor:				;				Lê a temperatura do sensor DS18B20
+		acall	iniOneWire
+		mov		a,#0CCh
+		acall	escreverOneWire
+		mov		a,#044h
+		acall	escreverOneWire
+		acall	iniOneWire
+		mov		a,#0CCh
+		acall	escreverOneWire
+		mov		a,#0BEh
+		acall	escreverOneWire
+		acall	lerByteOneWire
+		mov		r1,a
+		acall	lerByteOneWire
+		mov		r2,a
+		ret
+
+sendByte:
+		anl 	dat,#0Fh
+		mov 	r7,a
+		anl 	a,#0F0h
+		mov 	b,dat
+		anl 	b,#0Fh
+		orl 	a,b
+		mov 	dat,a
+		mov 	a,r7
+		setb 	en
+		acall	delay1ms
+		clr		en
+		mov		r7,#4
+
+esperaLCD:
+		acall	delay1ms
+		djnz	r7,esperaLCD
+		anl		dat,#0Fh
+		mov		r7,#4
+
+shiftLCD:
+		clr		c
+		rlc		a
+		djnz	r7,shiftLCD
+		anl		a,#0F0h
+		mov		b,dat
+		anl		b,#0Fh
+		orl		a,b
+		mov		dat,a
+		setb	en
+		acall	delay1ms
+		clr		en
+		mov		r7,#4
+
+esperaLCD2:
+		acall	delay1ms
+		djnz	r7,esperaLCD2
+		ret
+
+iniLCD:							;Função utilizada para controle do display
+		clr		rs				
+		mov		a,#02h;			Modo de 4 bits
+		acall	sendByte
+		mov		a,#028h;		5x7 caracteres
+		acall	sendByte
+		mov		a,#0Eh;			cursor ligado
+		acall	sendByte
+		mov		a,#01h
+		acall	sendByte
+		mov		a,#080h;		mover o cursor para a primeira posição
+		acall	sendByte
+		ret
+
+copiaBuf:				;		Copia dados da memória de código apontada pelo dptr para a RAM apontada pelo r0
+loopCopia:				;		Para no terminador nulo
+		clr		a
+		movc	a,@a+dptr
+		jz		pararCopia
+		mov		@r0,a
+		inc		r0
+		inc		dptr
+		sjmp	copiaBuf
+pararCopia:
+		ret
+
+sendChars:				;		Printa dados apontados por r0 no LCD
+		setb	rs		;		Para no terminador nulo
+sendCharsLoop:
+		mov		a,@r0
+		jz		pararSendChars
+		acall	sendByte
+		inc		r0
+		sjmp	sendCharsLoop
+pararSendChars:
+		ret
+
+convertTemp:
+		mov 	a, r2;			Os dados brutos do sensor de r0 e r1 são convertidos em valor absoluto da		
+		anl 	a, #080h;		temperatura (somente parte inteira) armazenada no acumulador
+		clr 	PSW.1;			se a temperatura for negativa, PSW.1 é definido
+		jnz 	negativo
+		sjmp 	positivo
+negativo:			; 			usado para exibir o simbolo de menos
+		setb	PSW.1					
+		mov 	a, r1
+		cpl 	a
+		clr 	c
+		inc 	a
+		mov 	r1, a
+		mov 	a, r2
+		cpl 	a
+		addc 	a, #0
+		mov 	r2, a
+positivo:
+		mov 	a, r2
+		mov 	r3, #4
+convertTempLoop:
+		clr		C
+		rlc		a
+		djnz	r3,convertTempLoop
+		mov		b,a
+		mov		a,r1
+		mov		r3,#4
+convertTempLoop2:
+		clr		c
+		rrc		a
+		djnz	r3,convertTempLoop2
+		orl		a,b
+		ret
+
+ascii:	mov 	b, #10;				Os valores em a e b são convertidos em ascii adicionando '0'
+		div 	ab
+		add 	a, #'0'
+		mov 	r7, a
+		mov 	a, b
+		add 	a, #'0'
+		mov 	b, a
+		mov 	a, r7
+		ret
+
+carregaBuf:					;		Armazena parte da temperatura inteira no buffer de exibição
+		jb		PSW.1,menos
+		sjmp	skip
+menos:	mov 	r3, a
+		mov 	a, #'-'
+		mov 	@r0, a
+		inc 	r0
+		mov 	a, r3
+skip:	mov 	@r0, a
+		inc 	r0
+		mov 	@r0, b
+		inc 	r0
+		ret
+end
